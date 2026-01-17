@@ -1,0 +1,7 @@
+- name: Clean Disc
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Remove unused log files
+      debug:
+        msg: "Started Disc cleaning..."
