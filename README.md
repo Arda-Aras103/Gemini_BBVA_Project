@@ -37,7 +37,7 @@ Every action taken by the agent is reported in real-time to **Discord** via Webh
 | Component | Technology | Responsibility |
 |-----------|------------|----------------|
 | **Core Logic** | **Go (Golang)** | High-performance backend, `struct` modeling, and process management. |
-| **Intelligence** | **Gemini 2.0 Flash** | Decision making and reasoning. |
+| **Intelligence** | **Gemini 3 Flash** | Decision making and reasoning. |
 | **Executor** | **Ansible** | Infrastructure as Code (IaC) for safe remediation. |
 | **Infrastructure** | **Docker & Nginx** | Simulated banking API gateway. |
 | **Notification** | **Discord Webhooks** | Reporting and alerting. |
