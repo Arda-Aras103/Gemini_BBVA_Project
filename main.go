@@ -10,11 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
+	"github.com/joho/godotenv"
 	"google.golang.org/genai"
 )
 
-const DiscordWebhookURL = "WEBHOOK_URL"
+var DiscordWebhookURL string
+var client *genai.Client
 
 type LogEntry struct {
 	Message  string
@@ -22,7 +25,11 @@ type LogEntry struct {
 	Priority int
 }
 
-var client *genai.Client
+type IncidentState struct {
+	LastAction string    `json:"last_action"`
+	Timestamp  time.Time `json:"timestamp"`
+	RetryCount int       `json:"retry_count"`
+}
 
 func main() {
 
@@ -52,7 +59,17 @@ func main() {
 }
 
 func setupAI() {
-	var err error
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("Didn't find .env file")
+	}
+	apiKey := os.Getenv("GOOGLE_API_KEY")
+	DiscordWebhookURL = os.Getenv("DISCORD_WEBHOOK_URL")
+
+	if apiKey == "" || DiscordWebhookURL == "" {
+		log.Fatal(" GOOGLE_API_KEY veya DISCORD_WEBHOOK_URL did not find! Check .env file")
+	}
+
 	ctx := context.Background()
 	client, err = genai.NewClient(ctx, nil)
 	if err != nil {
@@ -112,21 +129,56 @@ func askGemini(incomingLog string) string {
 }
 
 func executeAction(decision string) {
-	if strings.Contains(decision, "ACTION_RESTART") {
-		fmt.Println("Service Restarting...")
-		runPlaybook("playbooks/fix_service.yml")
 
-		// YENİ: Bildirim Gönder
-		sendDiscordAlert("Critical Error! Used `fix_service.yml` ve service restarting. ✅")
+	state := loadState()
+	if time.Since(state.Timestamp) < 5*time.Minute && state.RetryCount >= 3 {
+		fmt.Println("CIRCUIT BREAKER OPEN - Automation Halted.")
+		sendDiscordAlert("SYSTEM HALTED: Too many retries.")
+		return
+	}
+
+	fmt.Println("\nACTION REPORT:")
+
+	var playbookFile string
+	var actionType string
+	var logMessage string
+
+	if strings.Contains(decision, "ACTION_RESTART") {
+		playbookFile = "playbooks/fix_service.yml"
+		actionType = "RESTART SERVICE"
+		logMessage = fmt.Sprintf("🚨 Service Restarted (Attempt: %d)", state.RetryCount+1)
+
+		fmt.Println("Type: CRITICAL INCIDENT")
+		fmt.Printf("Proposed Action: %s\n", actionType)
 
 	} else if strings.Contains(decision, "ACTION_CLEAN") {
-		fmt.Println("Cleaning Disc...")
-		runPlaybook("playbooks/clean_logs.yml")
+		playbookFile = "playbooks/clean_logs.yml"
+		actionType = "CLEAN DISK"
+		logMessage = "Disk Cleaned"
 
-		sendDiscordAlert("Disc is full. Cleaned using `clean_logs.yml` ")
+		fmt.Println("Type: MAINTENANCE REQUIRED")
+		fmt.Printf("Proposed Action: %s\n", actionType)
 
 	} else {
-		fmt.Println("✅ No .")
+		fmt.Println("Type: UNKNOWN")
+		fmt.Println("Action: No action required.")
+		return
+	}
+
+	if !askForConfirmation() {
+		fmt.Println("❌ Action Cancelled by User.")
+		return
+	}
+
+	fmt.Println("Executing Playbook...")
+	runPlaybook(playbookFile)
+
+	sendDiscordAlert(logMessage)
+
+	if actionType == "RESTART SERVICE" {
+		saveState("RESTART", state.RetryCount+1)
+	} else {
+		saveState("CLEAN", 0)
 	}
 }
 
@@ -157,4 +209,36 @@ func sendDiscordAlert(message string) {
 	defer resp.Body.Close()
 
 	fmt.Println("📨 Sented Discord notification.")
+}
+
+func loadState() IncidentState {
+	var state IncidentState
+	fileData, err := os.ReadFile("state.json")
+	if err != nil {
+
+		return IncidentState{RetryCount: 0}
+	}
+	json.Unmarshal(fileData, &state)
+	return state
+}
+
+func saveState(action string, count int) {
+	state := IncidentState{
+		LastAction: action,
+		Timestamp:  time.Now(),
+		RetryCount: count,
+	}
+	data, _ := json.Marshal(state)
+	os.WriteFile("state.json", data, 0644)
+}
+
+func askForConfirmation() bool {
+	var response string
+	fmt.Print("\n SECURITY CHECK: Are you sure for this action? [y/N]: ")
+	_, err := fmt.Scanln(&response)
+	if err != nil || len(response) == 0 {
+		return false
+	}
+
+	return strings.ToLower(response)[0] == 'y'
 }
