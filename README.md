@@ -113,14 +113,3 @@ go run main.go "CRITICAL: Nginx is unresponsive and connection refused."
 Result:
 
     🤖 Decision: ACTION_RESTART ⚡ Ansible: Running fix_service.yml... ✅ Service Restored.
-
-
-### Project Structure
-InfraMinds/
-├── main.go                # The Brain (Go Logic, Structs, API calls)
-├── go.mod                 # Go dependencies
-├── docker-compose.yml     # Victim Infrastructure (Nginx)
-├── server.log             # Log file for simulation
-└── playbooks/
-    ├── fix_service.yml    # Ansible: Restarts Nginx container
-    └── clean_logs.yml     # Ansible: Cleans disk space
