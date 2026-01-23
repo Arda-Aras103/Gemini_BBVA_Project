@@ -16,58 +16,111 @@ import (
 	"google.golang.org/genai"
 )
 
-var DiscordWebhookURL string
+// --- DEĞİŞİKLİK 1: Discord gitti, C# Backend geldi ---
+const HQ_API_URL = "http://localhost:5000/api/Alert"
+
 var client *genai.Client
 
+// --- DEĞİŞİKLİK 2: C# Modeli ile Eşleşen Struct ---
+type SecurityAlert struct {
+	ServiceName string    `json:"serviceName"` // JSON tag'leri C# property'leriyle aynı
+	Message     string    `json:"message"`
+	ActionTaken string    `json:"actionTaken"`
+	Timestamp   time.Time `json:"timestamp"`
+}
+
+// Eski yapılarını koruyoruz (LogEntry vs.)
 type LogEntry struct {
 	Message  string
 	Source   string
 	Priority int
 }
 
-type IncidentState struct {
-	LastAction string    `json:"last_action"`
-	Timestamp  time.Time `json:"timestamp"`
-	RetryCount int       `json:"retry_count"`
-}
-
 func main() {
+	setupAI() // Discord kontrolünü buradan çıkardık
 
-	setupAI()
+	// ... (Log okuma kısımları aynı kalıyor) ...
 	var currentLog LogEntry
-
 	if len(os.Args) > 1 {
 		currentLog = getLogInput()
 	} else {
-
-		fmt.Println("No terminal input, Reading 'server.log' ...")
+		fmt.Println("No input, reading file...")
 		currentLog = readLogData()
 	}
 
 	fmt.Println("Analyzing:", currentLog.Message)
-	fmt.Printf("Source: %s | Priority Point: %d\n", currentLog.Source, currentLog.Priority)
 
 	if currentLog.Priority < 3 {
-		fmt.Println("AI is not required for this action.")
+		fmt.Println("AI is not required.")
 		return
 	}
 
 	decision := askGemini(currentLog.Message)
-	fmt.Println("Decision:", decision)
+	fmt.Println("Gemini Decision:", decision)
 
-	executeAction(decision)
+	// --- DEĞİŞİKLİK 3: executeAction artık Discord'a değil Merkeze yazacak ---
+	executeAction(decision, currentLog.Message)
 }
 
+// Parametre olarak orijinal log mesajını da ekledik ki raporda görünsün
+func executeAction(decision string, originalLog string) {
+
+	// ... (Ansible ve karar mantığı aynı kalıyor) ...
+
+	var serviceName string
+	var actionTaken string
+
+	if strings.Contains(decision, "ACTION_RESTART") {
+		serviceName = "Critical Service"
+		actionTaken = "Restart Triggered via Ansible"
+		runPlaybook("playbooks/fix_service.yml")
+	} else if strings.Contains(decision, "ACTION_CLEAN") {
+		serviceName = "Disk Cleaner"
+		actionTaken = "Cleanup Triggered via Ansible"
+		runPlaybook("playbooks/clean_logs.yml")
+	} else {
+		serviceName = "System Watcher"
+		actionTaken = "No Action / Ignored"
+	}
+
+	// --- DEĞİŞİKLİK 4: Discord yerine Raporlama ---
+	reportToHQ(serviceName, decision, actionTaken)
+}
+
+// --- DEĞİŞİKLİK 5: Yeni Haberleşme Fonksiyonu ---
+func reportToHQ(service string, aiMsg string, action string) {
+	alert := SecurityAlert{
+		ServiceName: service,
+		Message:     aiMsg,
+		ActionTaken: action,
+		Timestamp:   time.Now(),
+	}
+
+	// JSON'a paketle (Marshalling)
+	jsonData, _ := json.Marshal(alert)
+
+	// Postala
+	resp, err := http.Post(HQ_API_URL, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Println("⚠️  UYARI: C# Backend'e ulaşılamadı:", err)
+		return
+	}
+	defer resp.Body.Close()
+	fmt.Println("📡 Rapor yollandı. Durum:", resp.Status)
+}
+
+// ... (setupAI, askGemini, runPlaybook fonksiyonları aynı kalacak, sadece setupAI içindeki Discord check silinecek) ...
+
+// setupAI fonksiyonunun temizlenmiş hali:
 func setupAI() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Println("Didn't find .env file")
+		log.Println("Warning: .env file not found")
 	}
 	apiKey := os.Getenv("GOOGLE_API_KEY")
-	DiscordWebhookURL = os.Getenv("DISCORD_WEBHOOK_URL")
-
-	if apiKey == "" || DiscordWebhookURL == "" {
-		log.Fatal(" GOOGLE_API_KEY veya DISCORD_WEBHOOK_URL did not find! Check .env file")
+	// Discord webhook kontrolünü sildik
+	if apiKey == "" {
+		log.Fatal("GOOGLE_API_KEY not found!")
 	}
 
 	ctx := context.Background()
@@ -76,6 +129,8 @@ func setupAI() {
 		log.Fatal(err)
 	}
 }
+
+// Diğer yardımcı fonksiyonlar (getLogInput, readLogData, askGemini, runPlaybook) senin yazdığın gibi kalabilir.
 
 func getLogInput() LogEntry {
 	if len(os.Args) < 2 {
@@ -128,60 +183,6 @@ func askGemini(incomingLog string) string {
 	return resp.Text()
 }
 
-func executeAction(decision string) {
-
-	state := loadState()
-	if time.Since(state.Timestamp) < 5*time.Minute && state.RetryCount >= 3 {
-		fmt.Println("CIRCUIT BREAKER OPEN - Automation Halted.")
-		sendDiscordAlert("SYSTEM HALTED: Too many retries.")
-		return
-	}
-
-	fmt.Println("\nACTION REPORT:")
-
-	var playbookFile string
-	var actionType string
-	var logMessage string
-
-	if strings.Contains(decision, "ACTION_RESTART") {
-		playbookFile = "playbooks/fix_service.yml"
-		actionType = "RESTART SERVICE"
-		logMessage = fmt.Sprintf("🚨 Service Restarted (Attempt: %d)", state.RetryCount+1)
-
-		fmt.Println("Type: CRITICAL INCIDENT")
-		fmt.Printf("Proposed Action: %s\n", actionType)
-
-	} else if strings.Contains(decision, "ACTION_CLEAN") {
-		playbookFile = "playbooks/clean_logs.yml"
-		actionType = "CLEAN DISK"
-		logMessage = "Disk Cleaned"
-
-		fmt.Println("Type: MAINTENANCE REQUIRED")
-		fmt.Printf("Proposed Action: %s\n", actionType)
-
-	} else {
-		fmt.Println("Type: UNKNOWN")
-		fmt.Println("Action: No action required.")
-		return
-	}
-
-	if !askForConfirmation() {
-		fmt.Println("❌ Action Cancelled by User.")
-		return
-	}
-
-	fmt.Println("Executing Playbook...")
-	runPlaybook(playbookFile)
-
-	sendDiscordAlert(logMessage)
-
-	if actionType == "RESTART SERVICE" {
-		saveState("RESTART", state.RetryCount+1)
-	} else {
-		saveState("CLEAN", 0)
-	}
-}
-
 func runPlaybook(playbookName string) {
 	cmd := exec.Command("ansible-playbook", playbookName)
 	cmd.Stdout = os.Stdout
@@ -191,45 +192,6 @@ func runPlaybook(playbookName string) {
 	} else {
 		fmt.Println("✅ Success.")
 	}
-}
-
-func sendDiscordAlert(message string) {
-
-	payload := map[string]string{
-		"content": "🚨 **InfraMinds Report:** " + message,
-	}
-
-	jsonPayload, _ := json.Marshal(payload)
-
-	resp, err := http.Post(DiscordWebhookURL, "application/json", bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		fmt.Println("❌ Can't send Discord notification:", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	fmt.Println("📨 Sented Discord notification.")
-}
-
-func loadState() IncidentState {
-	var state IncidentState
-	fileData, err := os.ReadFile("state.json")
-	if err != nil {
-
-		return IncidentState{RetryCount: 0}
-	}
-	json.Unmarshal(fileData, &state)
-	return state
-}
-
-func saveState(action string, count int) {
-	state := IncidentState{
-		LastAction: action,
-		Timestamp:  time.Now(),
-		RetryCount: count,
-	}
-	data, _ := json.Marshal(state)
-	os.WriteFile("state.json", data, 0644)
 }
 
 func askForConfirmation() bool {
