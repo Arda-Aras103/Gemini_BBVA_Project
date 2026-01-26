@@ -25,6 +25,7 @@ go.work
 go.work.sum
 
 # env file
+py-worker/.env
 .env
 
 # Editor/IDE
@@ -33,3 +34,7 @@ go.work.sum
 
 api_keys.txt
 bank_api_gateway
+
+Task.md
+Learning.md
+py-worker/venv
