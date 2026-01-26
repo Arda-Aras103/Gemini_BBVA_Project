@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
-	"os"
-	"strings"
+	"math/rand"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -16,49 +16,73 @@ func failOnError(err error, msg string) {
 	}
 }
 
+type LogMessage struct {
+	ServiceName string `json:"service"`
+	Level       string `json:"level"`
+	Message     string `json:"message"`
+	Timestamp   string `json:"timestamp"`
+}
+
 func main() {
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
-	failOnError(err, "Failed to connect to RabbitMQ")
-	defer conn.Close()
+	connection, err := amqp.Dial("amqp://guest:guest@localhost:5672/") // For connection
+	failOnError(err, "Didn't connect RabbitMQ")
+	defer connection.Close() // Must use these keywords
 
-	ch, err := conn.Channel()
-	failOnError(err, "Failed to open a channel")
-	defer ch.Close()
+	channel, err := connection.Channel() // For process
+	failOnError(err, "Channel Error")
+	defer channel.Close() // Must use these keywords
 
-	q, err := ch.QueueDeclare(
-		"task_queue", // name
+	queue, err := channel.QueueDeclare(
+		"logs_queue", // Standart
 		true,         // durable
 		false,        // delete when unused
 		false,        // exclusive
 		false,        // no-wait
 		nil,          // arguments
 	)
-	failOnError(err, "Failed to declare a queue")
+	failOnError(err, "Didn't create queue")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	body := bodyFrom(os.Args)
-	err = ch.PublishWithContext(ctx,
-		"",     // exchange
-		q.Name, // routing key
-		false,  // mandatory
-		false,
-		amqp.Publishing{
-			DeliveryMode: amqp.Persistent,
-			ContentType:  "text/plain",
-			Body:         []byte(body),
-		})
-	failOnError(err, "Failed to publish a message")
-	log.Printf(" [x] Sent %s", body)
-}
-
-func bodyFrom(args []string) string {
-	var s string
-	if (len(args) < 2) || os.Args[1] == "" {
-		s = "hello"
-	} else {
-		s = strings.Join(args[1:], " ")
+	services := []string{"Service-1", "Service-2", "Service-3", "Service-4"}
+	levels := []string{"INFO", "WARNING", "ERROR", "CRITICAL"}
+	messages := []string{
+		"Connection timed out",
+		"Disk usage at 99%",
+		"User logged in successfully",
+		"Memory leak detected in pod",
+		"Database deadlock occurred",
 	}
-	return s
+
+	for {
+		logData := LogMessage{
+			ServiceName: services[rand.Intn(len(services))],
+			Level:       levels[rand.Intn(len(levels))],
+			Message:     messages[rand.Intn(len(messages))],
+			Timestamp:   time.Now().Format(time.RFC3339),
+		}
+
+		body, err := json.Marshal(logData)
+		if err != nil {
+			log.Println("JSON error:", err)
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+		err = channel.PublishWithContext(ctx,
+			"",         // exchange
+			queue.Name, // routing key ("logs_queue")
+			false,      // mandatory
+			false,
+			amqp.Publishing{
+				DeliveryMode: amqp.Persistent,
+				ContentType:  "application/json", // JSON Format
+				Body:         body,
+			})
+		cancel()
+
+		failOnError(err, "Failed to send message")
+		log.Printf(" [x] Success: %s", body)
+
+		time.Sleep(2 * time.Second)
+	}
 }
